@@ -45,20 +45,31 @@ def load_results():
         print(f"✗ Random Forest results not found: {e}")
         results['Random Forest'] = None
     
-    # GNN
+    # GNN Baseline (4 edge features - without payment type)
+    # Hardcoded results from original training run
+    results['GNN (Base)'] = {
+        'precision': 0.8803571428571428,
+        'recall': 0.9984810126582279,
+        'f1': 0.93570581257414,
+        'roc_auc': 0.9999466337588488,
+        'pr_auc': 0.9985418588820953
+    }
+    print("✓ GNN (Base) results loaded (4 edge features)")
+    
+    # GNN with Payment Type (11 edge features)
     try:
         gnn = np.load(os.path.join(RESULTS_DIR, 'gnn_results.npz'), allow_pickle=True)
-        results['GNN'] = {
+        results['GNN (+PayType)'] = {
             'precision': float(gnn['precision']),
             'recall': float(gnn['recall']),
             'f1': float(gnn['f1']),
             'roc_auc': float(gnn['roc_auc']),
             'pr_auc': float(gnn['pr_auc'])
         }
-        print("✓ GNN results loaded")
+        print("✓ GNN (+PayType) results loaded (11 edge features)")
     except Exception as e:
-        print(f"✗ GNN results not found: {e}")
-        results['GNN'] = None
+        print(f"✗ GNN (+PayType) results not found: {e}")
+        results['GNN (+PayType)'] = None
     
     return results
 
@@ -156,10 +167,15 @@ def print_summary(results):
         print(f"  Random Forest: Supervised, handles SMOTE-balanced data well")
         print(f"                 PR-AUC: {rf['pr_auc']:.4f}, F1: {rf['f1']:.4f}")
     
-    if 'GNN' in valid_results:
-        gnn = valid_results['GNN']
-        print(f"  GNN: Captures graph structure and transaction patterns")
-        print(f"       PR-AUC: {gnn['pr_auc']:.4f}, F1: {gnn['f1']:.4f}")
+    if 'GNN (Base)' in valid_results:
+        gnn = valid_results['GNN (Base)']
+        print(f"  GNN (Base): Captures graph structure (4 edge features)")
+        print(f"              PR-AUC: {gnn['pr_auc']:.4f}, F1: {gnn['f1']:.4f}")
+    
+    if 'GNN (+PayType)' in valid_results:
+        gnn = valid_results['GNN (+PayType)']
+        print(f"  GNN (+PayType): Adds payment type features (11 edge features)")
+        print(f"                  PR-AUC: {gnn['pr_auc']:.4f}, F1: {gnn['f1']:.4f}")
 
 
 def save_comparison(results):
