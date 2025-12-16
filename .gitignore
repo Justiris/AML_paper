@@ -1,0 +1,36 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Data files (too large for git)
+*.csv
+processed_data/
+SAML-D.csv
+
+# Model files (large)
+results/*.joblib
+results/*.pt
+
+# Results data (optional - can include if wanted)
+# results/*.npz
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
