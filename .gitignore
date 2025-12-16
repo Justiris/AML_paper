@@ -15,12 +15,9 @@ __pycache__/
 processed_data/
 SAML-D.csv
 
-# Model files (large)
-results/*.joblib
-results/*.pt
-
-# Results data (optional - can include if wanted)
-# results/*.npz
+# Results (large files - can be regenerated)
+results/*
+!results/model_comparison.npz
 
 # IDE
 .idea/

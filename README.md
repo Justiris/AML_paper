@@ -10,13 +10,18 @@ Comparison of three machine learning approaches for fraud detection on transacti
 
 ## Results Summary
 
-| Model | ROC-AUC | PR-AUC | Recall | F1-Score |
-|-------|---------|--------|--------|----------|
-| K-means | 0.506 | 0.001 | 0.10 | 0.002 |
-| Random Forest | 0.685 | 0.017 | 0.75 | 0.003 |
-| GNN (Epoch 15) | N/A | **0.998** | N/A | **0.71** |
+| Model | Precision | Recall | F1-Score | ROC-AUC | PR-AUC |
+|-------|-----------|--------|----------|---------|--------|
+| K-means | 0.11% | 10.48% | 0.22% | 0.506 | 0.001 |
+| Random Forest | 0.15% | 74.68% | 0.30% | 0.685 | 0.017 |
+| **GNN** | **88.04%** | **99.85%** | **93.57%** | **0.9999** | **0.9985** |
 
-**Key Finding**: GNN significantly outperforms traditional methods by leveraging transaction graph structure.
+### Key Findings
+
+- **GNN dramatically outperforms** traditional methods by leveraging transaction graph structure
+- GNN achieves **93.57% F1-Score** vs <1% for baseline models
+- Only **3 fraudulent transactions missed** out of 1,975 (99.85% recall)
+- Low false positive rate: 268 false alarms out of ~1.9M legitimate transactions
 
 ## Dataset
 
@@ -80,5 +85,7 @@ python compare_models.py
 
 ## Notes
 
-- GNN training benefits significantly from GPU acceleration
+- GNN training: ~6.7 minutes on AMD Radeon RX 7900 XTX (ROCm 6.2)
+- GNN early stopped at epoch 39/50 with patience=10
 - The SAML-D dataset is not included due to size (~1GB)
+- All model weights and results saved in `results/`
