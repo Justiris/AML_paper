@@ -165,3 +165,4 @@ python compare_models.py
 - GNN early stopped at epoch 39/50 with patience=10
 - The SAML-D dataset is not included due to size (~1GB)
 - All model weights and results saved in `results/`
+- gemini paper conversation: https://gemini.google.com/share/580f3cb99db8
