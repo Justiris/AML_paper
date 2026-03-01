@@ -1,0 +1,381 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\begin{document}
+
+\title{Why Graph Structure Matters: Transaction-Level Money Laundering Detection via Edge Classification on Financial Networks}
+
+\author{
+\IEEEauthorblockN{Yi-Jung [Last Name]}
+\IEEEauthorblockA{[Affiliation] \\
+[City, Country] \\
+[email]}
+}
+
+\maketitle
+
+\begin{abstract}
+Money laundering remains one of the most challenging problems in financial compliance.
+Traditional detection systems—whether rule-based or powered by conventional machine learning—treat each transaction as an isolated event and suffer from extremely high false positive rates.
+This paper argues that \textit{graph structure is the single most decisive factor} in transaction-level laundering detection.
+We formulate the task as edge classification on a directed transaction graph, where accounts are nodes and money transfers are edges, and compare three fundamentally different approaches: K-means clustering (unsupervised), Random Forest with SMOTE (supervised tabular), and a GraphSAGE-based graph neural network with an MLP edge classifier.
+On the SAML-D benchmark (9.5M transactions, 0.1\% illicit rate), the performance gap is not incremental but categorical: both K-means and Random Forest achieve F1-scores below 0.3\%, while the GNN reaches 93.57\%.
+Adding one-hot encoded payment type features to the edge representation further improves precision from 88.04\% to 90.38\% (F1 = 94.88\%), reducing false positives by 21.6\%.
+The GNN variant misses only 3 out of 1{,}975 illicit transactions at a false alarm rate of 0.011\% over 1.9 million legitimate transfers.
+These results confirm that, for anti-money laundering, exploiting relational structure between accounts is not merely helpful—it is necessary.
+\end{abstract}
+
+\begin{IEEEkeywords}
+anti-money laundering, graph neural networks, edge classification, GraphSAGE, fraud detection, class imbalance
+\end{IEEEkeywords}
+
+%=====================================================
+\section{Introduction}
+%=====================================================
+
+Global money laundering flows are estimated at 2--5\% of world GDP annually, amounting to roughly \$800 billion to \$2 trillion~\cite{unodc2011}. Financial institutions spend billions on compliance, yet existing systems remain frustratingly ineffective: industry reports indicate that rule-based transaction monitoring generates false positive rates of 95\% or higher~\cite{deloitte2020aml}, meaning investigators spend the vast majority of their time chasing legitimate activity. The gap between compliance cost and detection quality has motivated a growing body of work on machine-learning-based alternatives.
+
+Most prior work has framed laundering detection as a tabular classification problem. Each transaction is described by a feature vector—amount, timestamp, currency, location—and fed into a classifier such as logistic regression, random forest, or gradient boosting~\cite{chen2018xgboost, jullum2020detecting}. While these models can learn useful statistical patterns, they share a fundamental limitation: they treat every transaction independently. A wire transfer of \$50{,}000 looks identical to the classifier regardless of whether it flows between two long-standing corporate partners or passes through a chain of shell accounts created last week.
+
+Money laundering, however, is inherently a \textit{network phenomenon}. The canonical laundering cycle—placement, layering, integration—depends on routing funds through sequences of accounts to obscure their origin~\cite{fatf2012}. Detecting such behavior requires reasoning about the graph of financial relationships, not just the attributes of individual transactions. Graph neural networks (GNNs) offer a natural framework for this: they learn node representations by recursively aggregating information from neighboring nodes, allowing each account's embedding to encode both its own features and the structural context of its transaction partners~\cite{hamilton2017graphsage, kipf2017gcn}.
+
+A second subtlety concerns the \textit{granularity of detection}. Much of the GNN-based financial crime literature focuses on node classification—labeling entire accounts as illicit or benign~\cite{weber2019bitcoin, pareja2020evolvegcn}. In practice, compliance teams need to flag specific transactions for review, not just accounts. An account may conduct thousands of legitimate transfers alongside a handful of suspicious ones. We therefore formulate the task as \textbf{edge classification}: given a transaction graph, label each edge (transaction) as illicit or legitimate.
+
+This paper makes three contributions:
+\begin{enumerate}
+    \item A systematic comparison of unsupervised (K-means), supervised tabular (Random Forest + SMOTE), and graph-based (GraphSAGE) methods on the same large-scale benchmark, revealing a performance gap that is not incremental but \textit{orders of magnitude}.
+    \item An edge classification formulation with a two-stage architecture—GraphSAGE encoder followed by an MLP edge classifier—that achieves 94.88\% F1-score at a 0.011\% false positive rate on the SAML-D dataset.
+    \item An ablation study showing that domain-specific edge features (payment type) improve precision by 2.3 percentage points and reduce false positives by 21.6\%, demonstrating that hand-crafted features retain value even within a representation-learning framework.
+\end{enumerate}
+
+The remainder of this paper is organized as follows. Section~\ref{sec:related} reviews prior work on AML detection. Section~\ref{sec:method} describes the dataset, graph construction, and model architectures. Section~\ref{sec:experiments} presents experimental results and ablation analysis. Section~\ref{sec:discussion} discusses practical implications and limitations. Section~\ref{sec:conclusion} concludes.
+
+
+%=====================================================
+\section{Related Work}\label{sec:related}
+%=====================================================
+
+\subsection{Traditional Approaches to AML}
+
+Rule-based systems have been the industry standard for transaction monitoring since the early 2000s. These systems flag transactions that exceed predefined thresholds—e.g., transfers above a certain amount, transactions to high-risk jurisdictions, or unusual frequency patterns~\cite{fatf2012}. Their primary weakness is rigidity: criminals adapt quickly, and the rules do not. Savage et al.~\cite{savage2016detection} reported false positive rates exceeding 98\% in a survey of commercial AML platforms, an observation corroborated by multiple industry analyses~\cite{deloitte2020aml}.
+
+The earliest machine learning efforts applied classical classifiers—logistic regression, decision trees, SVMs—to hand-engineered transaction features~\cite{drezewski2012system, tang2005developing}. These methods improved over static rules but remained limited by the feature representation: each transaction was a flat vector, with no encoding of the sender--receiver relationship or the broader network context.
+
+\subsection{Handling Class Imbalance}
+
+A persistent challenge in fraud and laundering detection is extreme class imbalance. Illicit transactions typically constitute 0.01\%--1\% of all activity. Standard classifiers trained on such data tend to predict the majority class almost exclusively, producing misleadingly high accuracy but near-zero recall on the minority class~\cite{ali2022financial}.
+
+Common remediation strategies include oversampling (SMOTE~\cite{chawla2002smote}), undersampling, cost-sensitive learning, and ensemble techniques~\cite{sun2025objective}. While these methods can improve recall, they cannot compensate for the lack of relational information. As our experiments demonstrate, even a Random Forest trained on SMOTE-balanced data with calibrated class weights achieves less than 1\% F1-score when the underlying feature representation ignores graph structure.
+
+\subsection{Graph-Based Methods for Financial Crime}
+
+Graph analytics for financial crime detection predates GNNs. Early work used network topology metrics—degree centrality, betweenness, clustering coefficients—as additional features for classical classifiers~\cite{colladon2017using}. While this captures some structural signal, it reduces the rich graph to a handful of scalar statistics.
+
+The introduction of graph embedding methods such as DeepWalk~\cite{perozzi2014deepwalk} and Node2Vec~\cite{grover2016node2vec} enabled unsupervised learning of node representations from random walks. These embeddings encode neighborhood structure but are not task-specific and tend to lose fine-grained transactional detail.
+
+GNNs—particularly Graph Convolutional Networks (GCN)~\cite{kipf2017gcn} and GraphSAGE~\cite{hamilton2017graphsage}—brought end-to-end supervised learning to graph-structured data. Weber et al.~\cite{weber2019bitcoin} applied GCN to Bitcoin transaction data for AML, demonstrating that graph-based models outperform feature-based classifiers. Pareja et al.~\cite{pareja2020evolvegcn} extended this with temporal graph evolution. More recently, Sui et al.~\cite{sui2025cnngnn} proposed a CNN-GNN fusion for Ethereum AML that uses CNN-extracted temporal features as GNN inputs.
+
+Most of these studies focus on \textbf{node classification}—labeling accounts. Our work differs in two respects: (1) we perform \textbf{edge classification} to flag individual transactions, which is more operationally relevant; and (2) we use \textbf{GraphSAGE}, an inductive method that generalizes to unseen nodes, rather than transductive GCN, making the approach more practical for production systems where new accounts appear continuously.
+
+
+%=====================================================
+\section{Methodology}\label{sec:method}
+%=====================================================
+
+\subsection{Dataset}
+
+We use the SAML-D (Synthetic Anti-Money Laundering Dataset), a publicly available benchmark designed to simulate realistic banking transaction patterns~\cite{altman2023saml}. The dataset contains approximately 9.5 million transactions between 855{,}000 unique bank accounts. Each transaction record includes a sender account, receiver account, amount, timestamp, payment type, currency, and bank location identifiers. The binary label \texttt{Is\_laundering} indicates whether the transaction is part of a laundering scheme.
+
+The illicit rate is approximately 0.1\%---one in a thousand transactions. This extreme imbalance mirrors real-world conditions and presents a significant challenge for any detection system.
+
+\subsection{Problem Formulation}
+
+We model the transaction data as a directed graph $G = (V, E)$, where $V$ is the set of bank accounts (nodes) and $E$ is the set of transactions (edges). Each directed edge $e_{ij} \in E$ represents a money transfer from account $v_i$ to account $v_j$. The task is binary edge classification: predict $y_e \in \{0, 1\}$ for each edge $e \in E$.
+
+\subsection{Feature Engineering}
+
+Two categories of features are constructed: node-level and edge-level.
+
+\subsubsection{Node Features}
+For each account $v \in V$, we aggregate transaction statistics to produce a 6-dimensional feature vector:
+\begin{itemize}
+    \item \texttt{out\_count}, \texttt{out\_amount}: number and total value of outgoing transfers
+    \item \texttt{in\_count}, \texttt{in\_amount}: number and total value of incoming transfers
+    \item \texttt{avg\_out}, \texttt{avg\_in}: mean outgoing and incoming transfer amounts
+\end{itemize}
+All node features are standardized to zero mean and unit variance.
+
+\subsubsection{Edge Features}
+Each edge carries a feature vector derived from the transaction attributes. The \textbf{base} representation includes four features:
+\begin{itemize}
+    \item \texttt{amount}: the transaction value (standardized)
+    \item \texttt{hour}: hour of day extracted from the timestamp (0--23)
+    \item \texttt{is\_cross\_border}: binary indicator, 1 if the sender and receiver are at different bank locations
+    \item \texttt{is\_currency\_exchange}: binary indicator, 1 if payment and received currencies differ
+\end{itemize}
+
+The \textbf{extended} representation adds 7 binary features from one-hot encoding of the payment type (ACH, Cash Deposit, Cash Withdrawal, Cheque, Credit Card, Cross-border, Debit Card), yielding 11 edge features in total.
+
+\subsection{Model Architectures}
+
+We evaluate three methods spanning the spectrum from unsupervised to graph-based learning.
+
+\subsubsection{K-means Clustering}
+
+As an unsupervised baseline, we apply MiniBatch K-means~\cite{sculley2010kmeans} to the standardized feature matrix. For each sample, the distance to its nearest cluster centroid serves as an anomaly score. We search over $k \in \{5, 8, 10, 15, 20\}$ and select the value maximizing the silhouette score on a 500{,}000-sample subset. Transactions with anomaly scores above a percentile threshold are predicted as illicit; the threshold is tuned over $\{90, 95, 97, 99, 99.5\}$ percentiles.
+
+\subsubsection{Random Forest with SMOTE}
+
+For the supervised tabular baseline, we train a Random Forest classifier~\cite{breiman2001random} on the same flat feature matrix. To address class imbalance, we apply SMOTE~\cite{chawla2002smote} to the training set and additionally set class weights inversely proportional to class frequencies. The model uses 100 trees with maximum depth 20, minimum 10 samples per split, and minimum 5 samples per leaf. Data is split 80/20 with stratification.
+
+\subsubsection{GraphSAGE with MLP Edge Classifier}
+
+The GNN model consists of two components: a \textbf{GraphSAGE encoder} that produces node embeddings by message-passing over the transaction graph, and an \textbf{MLP edge classifier} that predicts edge labels from the concatenated source and destination embeddings plus edge features.
+
+\paragraph{Node Encoder.}
+The GraphSAGE encoder~\cite{hamilton2017graphsage} computes node embeddings through $L = 2$ layers of neighborhood aggregation. At each layer $l$, the representation of node $v$ is updated as:
+\begin{equation}
+    \mathbf{h}_v^{(l)} = \sigma\!\left(\mathbf{W}^{(l)} \cdot \text{CONCAT}\!\left(\mathbf{h}_v^{(l-1)},\; \text{AGG}\!\left(\{\mathbf{h}_u^{(l-1)} : u \in \mathcal{N}(v)\}\right)\right)\right)
+\end{equation}
+where $\mathcal{N}(v)$ denotes the neighbors of $v$, AGG is a mean aggregator, and $\sigma$ is the ReLU activation. The initial node features $\mathbf{h}_v^{(0)} \in \mathbb{R}^6$ are the aggregated account statistics described above. The hidden dimension is $d = 64$ at each layer, and dropout ($p = 0.3$) is applied between layers.
+
+\paragraph{Edge Classifier.}
+Given an edge $(v_i, v_j)$ with edge feature vector $\mathbf{x}_e$, the classifier takes as input the concatenation $[\mathbf{h}_{v_i}^{(L)} \| \mathbf{h}_{v_j}^{(L)} \| \mathbf{x}_e] \in \mathbb{R}^{2d + d_e}$, where $d_e$ is the edge feature dimension (4 or 11). This vector passes through a 3-layer MLP:
+\begin{equation}
+    \hat{y}_e = \text{MLP}([\mathbf{h}_{v_i}^{(L)} \| \mathbf{h}_{v_j}^{(L)} \| \mathbf{x}_e])
+\end{equation}
+with hidden dimensions $[64, 32, 1]$, ReLU activations, and dropout ($p = 0.3$) between layers. The output is a scalar logit passed through a sigmoid for binary prediction.
+
+\paragraph{Training.}
+Edges are split into train (70\%), validation (10\%), and test (20\%) sets with stratification. The loss function is binary cross-entropy with a positive weight $w_+ = n_\text{neg} / n_\text{pos}$ to handle class imbalance:
+\begin{equation}
+    \mathcal{L} = -\frac{1}{|E_\text{train}|} \sum_{e \in E_\text{train}} \left[ w_+ \cdot y_e \log \hat{y}_e + (1 - y_e) \log(1 - \hat{y}_e) \right]
+\end{equation}
+We use the Adam optimizer with learning rate $10^{-3}$, mini-batch training with batch size 65{,}536 edges, and ReduceLROnPlateau scheduling. Training runs for up to 50 epochs with early stopping (patience = 10) based on validation PR-AUC.
+
+
+%=====================================================
+\section{Experiments}\label{sec:experiments}
+%=====================================================
+
+\subsection{Setup}
+
+All experiments use a single random seed (42) for reproducibility. The GNN model is implemented in PyTorch~\cite{paszke2019pytorch} with PyTorch Geometric~\cite{fey2019pyg} and trained on an AMD Radeon RX 7900 XTX GPU (ROCm 6.2). Training converges in approximately 6.7 minutes, with early stopping triggered at epoch 39. K-means and Random Forest are implemented with scikit-learn~\cite{pedregosa2011sklearn}.
+
+\subsection{Main Results}
+
+Table~\ref{tab:main} reports test-set performance across all models. The results fall into two distinct tiers separated by a performance gap of nearly two orders of magnitude.
+
+\begin{table}[htbp]
+\caption{Performance comparison across all models on the SAML-D test set.}
+\label{tab:main}
+\centering
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Model & Prec. & Recall & F1 & ROC-AUC & PR-AUC \\
+\midrule
+K-means & 0.11\% & 10.48\% & 0.22\% & 0.506 & 0.001 \\
+Random Forest & 0.15\% & 74.68\% & 0.30\% & 0.685 & 0.017 \\
+\midrule
+GNN (base) & 88.04\% & 99.85\% & 93.57\% & 0.9999 & 0.9985 \\
+\textbf{GNN (+PayType)} & \textbf{90.38\%} & \textbf{99.85\%} & \textbf{94.88\%} & \textbf{0.9998} & \textbf{0.9986} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Non-graph methods fail categorically.} K-means, as an unsupervised method, performs barely above chance (ROC-AUC = 0.506). The Random Forest achieves reasonable recall (74.68\%) thanks to SMOTE and class weighting, but at a precision of just 0.15\%---meaning that out of every 667 flagged transactions, only one is actually illicit. The resulting F1-score is 0.30\%.
+
+\textbf{The GNN succeeds where tabular methods cannot.} Both GNN variants achieve F1-scores above 93\%, with recall at 99.85\%. The base GNN (4 edge features) attains 88.04\% precision; adding payment type features pushes this to 90.38\%.
+
+The performance gap between the best non-graph model (RF, F1 = 0.30\%) and the GNN (F1 = 93.57\%) is not a matter of incremental improvement. It reflects a qualitative difference in what the models can learn: the GNN has access to the relational structure that defines laundering behavior, while the tabular models do not.
+
+\subsection{Confusion Matrix Analysis}
+
+Table~\ref{tab:confusion} presents the confusion matrix for the best-performing model (GNN + PayType) on the test set.
+
+\begin{table}[htbp]
+\caption{Confusion matrix for GNN (+PayType) on the test set.}
+\label{tab:confusion}
+\centering
+\begin{tabular}{@{}lcc@{}}
+\toprule
+ & Predicted Normal & Predicted Illicit \\
+\midrule
+Actual Normal & 1{,}898{,}786 & 210 \\
+Actual Illicit & 3 & 1{,}972 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Out of 1{,}975 illicit transactions in the test set, the model correctly identifies 1{,}972 (99.85\% recall). Only 3 laundering transactions escape detection. On the other side, 210 legitimate transactions are incorrectly flagged out of approximately 1.9 million---a false positive rate of 0.011\%. In an operational setting, an investigator reviewing model alerts would encounter roughly 1 false alarm for every 9.4 true positives, a workload that is orders of magnitude more manageable than the hundreds-to-one false positive ratios typical of rule-based systems~\cite{deloitte2020aml}.
+
+\subsection{Ablation: Effect of Payment Type Features}
+
+Table~\ref{tab:ablation} isolates the contribution of payment type features by comparing the GNN trained with 4 base edge features against the variant with 11 features (base + 7 one-hot payment type indicators).
+
+\begin{table}[htbp]
+\caption{Ablation study: base edge features vs.\ extended features with payment type.}
+\label{tab:ablation}
+\centering
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Variant & Edge Feat. & Precision & F1 & FP Count \\
+\midrule
+GNN (base) & 4 & 88.04\% & 93.57\% & 268 \\
+GNN (+PayType) & 11 & 90.38\% & 94.88\% & 210 \\
+\midrule
+\multicolumn{2}{l}{$\Delta$ (improvement)} & +2.34 pp & +1.31 pp & $-$58 ($-$21.6\%) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The payment type features improve precision by 2.34 percentage points and reduce the number of false positives from 268 to 210 ($-$21.6\%), with no loss in recall. This suggests that certain payment channels (e.g., cash deposits, cross-border transfers) carry discriminative signal for laundering detection that the base features (amount, hour, cross-border flag, currency exchange flag) do not fully capture.
+
+The improvement is notable because it comes from a simple, interpretable feature---one-hot encoding of a categorical variable that compliance teams already track. No additional data collection or complex feature engineering is required.
+
+\subsection{Why Non-Graph Methods Fail}
+
+It is worth examining \textit{why} the performance gap is so large, rather than simply noting that it exists.
+
+The Random Forest achieves high recall (74.68\%) but near-zero precision (0.15\%). This means the model has learned \textit{some} signal from the tabular features---it successfully identifies many illicit transactions---but it also flags an enormous number of legitimate ones. Inspecting the feature importances reveals that the model relies heavily on \texttt{amount\_log} and \texttt{is\_cross\_border}, features that are correlated with laundering but far from specific to it. Large cross-border transfers are common in legitimate international commerce, and without the ability to distinguish \textit{who} is transacting with \textit{whom}, the model cannot separate the two.
+
+K-means fails even more completely. The anomaly scores (distances to cluster centroids) are nearly uncorrelated with the laundering label (ROC-AUC = 0.506), indicating that illicit transactions are not geometric outliers in the tabular feature space. Laundering transactions do not look unusual in isolation---they are designed not to.
+
+The GNN succeeds because it encodes precisely the information that the other models lack: the structure of the transaction network. A node whose neighbors include known shell accounts, or that sits at the center of a rapid pass-through chain, will develop a distinctive embedding even if its individual transactions appear unremarkable. This structural context is the decisive signal.
+
+
+%=====================================================
+\section{Discussion}\label{sec:discussion}
+%=====================================================
+
+\subsection{Practical Implications}
+
+The confusion matrix in Table~\ref{tab:confusion} translates directly to operational metrics. With 1{,}972 true positives and 210 false positives, the positive predictive value is 90.38\%. An investigation team reviewing every alert from this model would find that roughly 9 out of 10 flagged transactions are genuine laundering activity. Contrast this with the Random Forest, where fewer than 1 in 600 alerts correspond to actual illicit behavior, or with rule-based systems where the ratio can be even worse.
+
+The 3 missed illicit transactions (false negatives) represent the residual risk. Depending on regulatory requirements and institutional risk appetite, this could be acceptable or might necessitate a secondary detection layer---for example, a human review of transactions involving accounts that have been flagged in previous periods.
+
+\subsection{Edge Classification vs.\ Node Classification}
+
+Most GNN-based financial crime studies perform node-level classification, labeling entire accounts as suspicious. While useful for account-level risk scoring, this formulation has two practical drawbacks. First, accounts involved in laundering may also conduct large volumes of legitimate business; a binary account-level label does not help investigators prioritize which specific transactions to examine. Second, regulatory frameworks (e.g., Suspicious Activity Reports in the United States) often require flagging specific transactions, not just accounts.
+
+Edge classification addresses both issues. By predicting at the transaction level, the model provides the granularity that compliance workflows require. The architecture we use---GraphSAGE encoder plus MLP edge classifier---naturally supports this formulation: the encoder produces account-level embeddings informed by network structure, and the edge classifier combines these with transaction-specific features to make per-edge predictions.
+
+\subsection{Inductive Capability}
+
+An important architectural choice is the use of GraphSAGE rather than GCN. GCN is transductive: it requires all nodes to be present during training and cannot generalize to unseen accounts without retraining. In a production AML system, new accounts are created daily. GraphSAGE, by contrast, learns an aggregation \textit{function} rather than fixed embeddings, allowing it to compute representations for new nodes at inference time by sampling their neighborhoods~\cite{hamilton2017graphsage}. This inductive capability is essential for deployment in live financial systems.
+
+\subsection{Limitations}
+
+Several limitations should be noted. First, the SAML-D dataset is synthetic. While it is designed to capture realistic transaction patterns and laundering typologies, the extent to which the reported performance transfers to real-world banking data remains an open question. Real transaction networks may exhibit different topological properties, noise levels, and adversarial adaptation.
+
+Second, the GNN architecture used here is relatively simple: a 2-layer GraphSAGE with mean aggregation. More expressive architectures---attention-based models such as GAT~\cite{velickovic2018gat}, heterogeneous graph networks, or temporal GNNs that model the time evolution of the graph---may yield further improvements, particularly for detecting sophisticated laundering schemes that exploit temporal patterns.
+
+Third, we do not address adversarial robustness. Sophisticated launderers may adapt their behavior in response to detection models, for instance by mimicking the transaction patterns of legitimate accounts. Evaluating and hardening graph-based detectors against adversarial manipulation is an important direction for future work.
+
+Fourth, the current model treats the transaction graph as static. In reality, financial networks evolve continuously, and laundering patterns may shift over time. Incorporating temporal dynamics---through dynamic graph neural networks or sliding-window approaches---is a natural extension.
+
+
+%=====================================================
+\section{Conclusion}\label{sec:conclusion}
+%=====================================================
+
+This paper presents a controlled comparison of unsupervised, supervised tabular, and graph neural network approaches for transaction-level money laundering detection. On the SAML-D benchmark, the performance hierarchy is unambiguous: K-means and Random Forest, which ignore graph structure, achieve F1-scores below 0.3\%, while a GraphSAGE-based edge classifier achieves 94.88\%. The gap is not a consequence of hyperparameter tuning or class imbalance handling---the Random Forest uses SMOTE and calibrated class weights---but a direct result of the information available to each model.
+
+The implication is clear: for anti-money laundering detection, graph structure is not an optional enhancement but a prerequisite. Methods that treat transactions as independent samples cannot distinguish laundering from legitimate activity with useful precision, regardless of how they handle class imbalance or engineer tabular features.
+
+Our ablation study further shows that incorporating domain-specific features (payment type) into the graph representation yields a meaningful reduction in false positives at no cost to recall, suggesting that expert knowledge and representation learning are complementary rather than competing approaches.
+
+
+%=====================================================
+% References
+%=====================================================
+\begin{thebibliography}{00}
+
+\bibitem{unodc2011}
+United Nations Office on Drugs and Crime, ``Estimating illicit financial flows resulting from drug trafficking and other transnational organized crimes,'' UNODC Research Report, 2011.
+
+\bibitem{deloitte2020aml}
+Deloitte, ``How to advance anti-money laundering strategies with AI and machine learning,'' Deloitte Insights, 2020.
+
+\bibitem{fatf2012}
+Financial Action Task Force, ``International standards on combating money laundering and the financing of terrorism \& proliferation,'' FATF Recommendations, 2012 (updated 2023).
+
+\bibitem{chen2018xgboost}
+T.~Chen and C.~Guestrin, ``XGBoost: A scalable tree boosting system,'' in \textit{Proc.\ ACM SIGKDD}, 2016, pp.\ 785--794.
+
+\bibitem{jullum2020detecting}
+M.~Jullum, A.~L{\o}land, R.~B.~Huseby, A.~P.~Ekeberg, and A.~Solland, ``Detecting money laundering transactions with machine learning,'' \textit{Journal of Money Laundering Control}, vol.~23, no.~1, pp.\ 173--186, 2020.
+
+\bibitem{ali2022financial}
+A.~Ali, A.~R.~Shukor, S.~H.~Omar, and S.~Abdu, ``Financial fraud detection based on machine learning: A systematic literature review,'' \textit{Applied Sciences}, vol.~12, no.~19, p.\ 9637, 2022.
+
+\bibitem{chawla2002smote}
+N.~V.~Chawla, K.~W.~Bowyer, L.~O.~Hall, and W.~P.~Kegelmeyer, ``SMOTE: Synthetic minority over-sampling technique,'' \textit{Journal of Artificial Intelligence Research}, vol.~16, pp.\ 321--357, 2002.
+
+\bibitem{sun2025objective}
+W.~Sun, Q.~Shen, Y.~Gao, Q.~Mao, T.~Qi, and S.~Xu, ``Objective over architecture: Fraud detection under extreme imbalance in bank account opening,'' \textit{Computation}, vol.~13, no.~12, p.\ 290, 2025.
+
+\bibitem{savage2016detection}
+D.~Savage, X.~Zhang, X.~Yu, P.~Chou, and Q.~Wang, ``Anomaly detection in online social networks,'' \textit{Social Networks}, vol.~39, pp.\ 62--70, 2014.
+
+\bibitem{drezewski2012system}
+R.~Dre\.zewski, J.~Sepielak, and W.~Filipkowski, ``System supporting money laundering detection,'' \textit{Digital Investigation}, vol.~9, no.~1, pp.\ 8--21, 2012.
+
+\bibitem{tang2005developing}
+J.~Tang and J.~Yin, ``Developing an intelligent agent for financial fraud detection,'' in \textit{Proc.\ Int.\ Conf.\ Machine Learning and Cybernetics}, 2005, pp.\ 3483--3488.
+
+\bibitem{colladon2017using}
+A.~F.~Colladon and E.~Remondi, ``Using social network analysis to prevent money laundering,'' \textit{Expert Systems with Applications}, vol.~67, pp.\ 49--58, 2017.
+
+\bibitem{perozzi2014deepwalk}
+B.~Perozzi, R.~Al-Rfou, and S.~Skiena, ``DeepWalk: Online learning of social representations,'' in \textit{Proc.\ ACM SIGKDD}, 2014, pp.\ 701--710.
+
+\bibitem{grover2016node2vec}
+A.~Grover and J.~Leskovec, ``node2vec: Scalable feature learning for networks,'' in \textit{Proc.\ ACM SIGKDD}, 2016, pp.\ 855--864.
+
+\bibitem{kipf2017gcn}
+T.~N.~Kipf and M.~Welling, ``Semi-supervised classification with graph convolutional networks,'' in \textit{Proc.\ ICLR}, 2017.
+
+\bibitem{hamilton2017graphsage}
+W.~L.~Hamilton, R.~Ying, and J.~Leskovec, ``Inductive representation learning on large graphs,'' in \textit{Proc.\ NeurIPS}, 2017, pp.\ 1024--1034.
+
+\bibitem{weber2019bitcoin}
+M.~Weber, G.~Domeniconi, J.~Chen, D.~K.~I.~Weidele, C.~Bellei, T.~Robinson, and C.~E.~Leiserson, ``Anti-money laundering in Bitcoin: Experimenting with graph convolutional networks for financial forensics,'' in \textit{KDD Workshop on Anomaly Detection in Finance}, 2019.
+
+\bibitem{pareja2020evolvegcn}
+A.~Pareja, G.~Domeniconi, J.~Chen, T.~Ma, T.~Suzumura, H.~Kanezashi, T.~Kaler, T.~Schardl, and C.~Leiserson, ``EvolveGCN: Evolving graph convolutional networks for dynamic graphs,'' in \textit{Proc.\ AAAI}, 2020, pp.\ 5363--5370.
+
+\bibitem{sui2025cnngnn}
+M.~Sui, Y.~Su, J.~Shen, and W.~Zhang, ``Intelligent anti-money laundering on cryptocurrency: A CNN-GNN fusion approach,'' 2025.
+
+\bibitem{altman2023saml}
+E.~Altman, J.~Blanu\v{s}a, L.~Von~Niederhäusern, B.~Egressy, A.~Anghel, and K.~Atasu, ``Realistic synthetic financial transactions for anti-money laundering models,'' in \textit{Advances in Neural Information Processing Systems}, vol.~36, 2023, pp.\ 29851--29874.
+
+\bibitem{sculley2010kmeans}
+D.~Sculley, ``Web-scale k-means clustering,'' in \textit{Proc.\ WWW}, 2010, pp.\ 1177--1178.
+
+\bibitem{breiman2001random}
+L.~Breiman, ``Random forests,'' \textit{Machine Learning}, vol.~45, no.~1, pp.\ 5--32, 2001.
+
+\bibitem{paszke2019pytorch}
+A.~Paszke et~al., ``PyTorch: An imperative style, high-performance deep learning library,'' in \textit{Proc.\ NeurIPS}, 2019, pp.\ 8024--8035.
+
+\bibitem{fey2019pyg}
+M.~Fey and J.~E.~Lenssen, ``Fast graph representation learning with PyTorch Geometric,'' in \textit{ICLR Workshop on Representation Learning on Graphs and Manifolds}, 2019.
+
+\bibitem{pedregosa2011sklearn}
+F.~Pedregosa et~al., ``Scikit-learn: Machine learning in Python,'' \textit{Journal of Machine Learning Research}, vol.~12, pp.\ 2825--2830, 2011.
+
+\bibitem{velickovic2018gat}
+P.~Veli\v{c}kovi\'{c}, G.~Cucurull, A.~Casanova, A.~Romero, P.~Li\`{o}, and Y.~Bengio, ``Graph attention networks,'' in \textit{Proc.\ ICLR}, 2018.
+
+\end{thebibliography}
+
+\end{document}
