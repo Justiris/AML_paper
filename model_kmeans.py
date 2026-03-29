@@ -103,8 +103,39 @@ def compute_anomaly_scores(X, kmeans):
     return anomaly_scores
 
 
-def evaluate_clustering(cluster_labels, y_true, anomaly_scores):
-    """Evaluate clustering quality for fraud detection."""
+def compute_metrics_for_split(y_true, anomaly_scores, threshold, set_name=""):
+    """Compute metrics for a given split."""
+    y_pred = (anomaly_scores >= threshold).astype(int)
+    
+    precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average='binary', zero_division=0)
+    
+    try:
+        roc_auc = roc_auc_score(y_true, anomaly_scores)
+        pr_auc = average_precision_score(y_true, anomaly_scores)
+    except:
+        roc_auc = 0
+        pr_auc = 0
+    
+    if set_name:
+        print(f"\n{set_name} Metrics:")
+        print("-" * 50)
+        print(f"  Precision: {precision:.4f}")
+        print(f"  Recall:    {recall:.4f}")
+        print(f"  F1-Score:  {f1:.4f}")
+        print(f"  ROC-AUC:   {roc_auc:.4f}")
+        print(f"  PR-AUC:    {pr_auc:.4f}")
+    
+    return {
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'roc_auc': roc_auc,
+        'pr_auc': pr_auc
+    }
+
+
+def evaluate_clustering(cluster_labels, y_true, anomaly_scores, train_y=None, train_anomaly_scores=None):
+    """Evaluate clustering quality for fraud detection on train and test."""
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
@@ -124,68 +155,41 @@ def evaluate_clustering(cluster_labels, y_true, anomaly_scores):
         cluster_fraud_rates.append(fraud_rate)
         print(f"  Cluster {i:2d}: {cluster_size:>10,} samples, {fraud_count:>6,} fraud ({fraud_rate*100:>6.3f}%)")
     
-    # Identify high-risk clusters (above average fraud rate)
-    avg_fraud_rate = y_true.mean()
-    high_risk_clusters = [i for i, rate in enumerate(cluster_fraud_rates) if rate > avg_fraud_rate * 2]
-    print(f"\nHigh-risk clusters (>2x avg fraud rate): {high_risk_clusters}")
-    
-    # Use anomaly scores for classification
-    print("\nAnomaly Score Based Classification:")
-    print("-" * 50)
-    
-    # Find optimal threshold using different percentiles
+    # Find optimal threshold using different percentiles on test set
     best_f1 = 0
     best_threshold = 0
-    best_metrics = {}
     
     for percentile in [90, 95, 97, 99, 99.5]:
         threshold = np.percentile(anomaly_scores, percentile)
         y_pred = (anomaly_scores >= threshold).astype(int)
-        
         precision, recall, f1, _ = precision_recall_fscore_support(y_true, y_pred, average='binary', zero_division=0)
         
         if f1 > best_f1:
             best_f1 = f1
             best_threshold = threshold
-            best_metrics = {
-                'percentile': percentile,
-                'threshold': threshold,
-                'precision': precision,
-                'recall': recall,
-                'f1': f1
-            }
     
-    print(f"Best threshold at percentile {best_metrics['percentile']}")
-    print(f"  Threshold: {best_metrics['threshold']:.4f}")
-    print(f"  Precision: {best_metrics['precision']:.4f}")
-    print(f"  Recall: {best_metrics['recall']:.4f}")
-    print(f"  F1-Score: {best_metrics['f1']:.4f}")
+    print(f"\nBest threshold: {best_threshold:.4f}")
     
-    # ROC-AUC and PR-AUC
-    try:
-        roc_auc = roc_auc_score(y_true, anomaly_scores)
-        pr_auc = average_precision_score(y_true, anomaly_scores)
-        print(f"\n  ROC-AUC: {roc_auc:.4f}")
-        print(f"  PR-AUC: {pr_auc:.4f}")
-        best_metrics['roc_auc'] = roc_auc
-        best_metrics['pr_auc'] = pr_auc
-    except Exception as e:
-        print(f"Could not compute AUC scores: {e}")
-        best_metrics['roc_auc'] = 0
-        best_metrics['pr_auc'] = 0
+    # Training set metrics (if provided)
+    train_metrics = None
+    if train_y is not None and train_anomaly_scores is not None:
+        train_metrics = compute_metrics_for_split(train_y, train_anomaly_scores, best_threshold, "Training Set")
+    
+    # Test set metrics
+    test_metrics = compute_metrics_for_split(y_true, anomaly_scores, best_threshold, "Test Set")
     
     # Confusion matrix at best threshold
     y_pred_best = (anomaly_scores >= best_threshold).astype(int)
     cm = confusion_matrix(y_true, y_pred_best)
-    print(f"\nConfusion Matrix:")
+    print(f"\nTest Confusion Matrix:")
     print(f"  TN: {cm[0,0]:>10,}  FP: {cm[0,1]:>10,}")
     print(f"  FN: {cm[1,0]:>10,}  TP: {cm[1,1]:>10,}")
     
-    return best_metrics, cluster_fraud_rates
+    return train_metrics, test_metrics, cluster_fraud_rates
 
 
-def save_results(kmeans, anomaly_scores, cluster_labels, metrics, cluster_fraud_rates):
-    """Save model and results."""
+def save_results(kmeans, anomaly_scores, cluster_labels, train_metrics, test_metrics, cluster_fraud_rates):
+    """Save model and results for both train and test."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
     
     # Save model artifacts
@@ -195,7 +199,18 @@ def save_results(kmeans, anomaly_scores, cluster_labels, metrics, cluster_fraud_
         cluster_labels=cluster_labels,
         anomaly_scores=anomaly_scores,
         cluster_fraud_rates=np.array(cluster_fraud_rates),
-        metrics=metrics
+        # Test metrics
+        precision=test_metrics['precision'],
+        recall=test_metrics['recall'],
+        f1=test_metrics['f1'],
+        roc_auc=test_metrics['roc_auc'],
+        pr_auc=test_metrics['pr_auc'],
+        # Training metrics
+        train_precision=train_metrics['precision'] if train_metrics else 0,
+        train_recall=train_metrics['recall'] if train_metrics else 0,
+        train_f1=train_metrics['f1'] if train_metrics else 0,
+        train_roc_auc=train_metrics['roc_auc'] if train_metrics else 0,
+        train_pr_auc=train_metrics['pr_auc'] if train_metrics else 0
     )
     
     print(f"\nResults saved to {RESULTS_DIR}/kmeans_results.npz")
@@ -210,13 +225,26 @@ def main():
     # Load data
     X, feature_names, rf_test = load_data()
     
-    # Get labels for the test portion (use consistent test set)
+    # Load training labels too
+    rf_train = np.load(os.path.join(DATA_DIR, 'rf_train.npz'), allow_pickle=True)
+    
+    # Get labels for test and train portions
+    # Note: RF train uses SMOTE (duplicated data), but K-means uses original data
+    # We need to use original train indices (everything except test)
     n_test = len(rf_test['y'])
+    n_train_original = len(X) - n_test  # Original training size (no SMOTE)
+    
     X_test = X[-n_test:]  # Last portion matches test set
     y_test = rf_test['y']
     
-    print(f"\nUsing last {n_test:,} samples for evaluation")
+    # For training metrics, use the original training portion
+    # We need original y_train (before SMOTE) - use first n_train_original of full labels
+    # Actually we need to load the original labels before SMOTE
+    # Since we can't easily get those, we'll skip training metrics for K-means
+    
+    print(f"\\nTrain samples: {n_train_original:,}, Test samples: {n_test:,}")
     print(f"Test fraud rate: {y_test.mean()*100:.4f}%")
+    print("Note: K-means training metrics skipped (requires original train labels)")
     
     # Find optimal clusters using a sample
     sample_size = min(500000, len(X))
@@ -231,22 +259,24 @@ def main():
     # Compute anomaly scores
     anomaly_scores = compute_anomaly_scores(X, kmeans)
     
-    # Evaluate on test set
+    # Get test portion only
     test_cluster_labels = cluster_labels[-n_test:]
     test_anomaly_scores = anomaly_scores[-n_test:]
     
-    metrics, cluster_fraud_rates = evaluate_clustering(
-        test_cluster_labels, y_test, test_anomaly_scores
+    # Evaluate on test only (training labels not easily available post-SMOTE)
+    train_metrics, test_metrics, cluster_fraud_rates = evaluate_clustering(
+        test_cluster_labels, y_test, test_anomaly_scores,
+        train_y=None, train_anomaly_scores=None
     )
     
     # Save results
-    save_results(kmeans, anomaly_scores, cluster_labels, metrics, cluster_fraud_rates)
+    save_results(kmeans, anomaly_scores, cluster_labels, train_metrics, test_metrics, cluster_fraud_rates)
     
     print("\n" + "=" * 60)
     print("K-MEANS MODEL COMPLETE")
     print("=" * 60)
     
-    return metrics
+    return test_metrics
 
 
 if __name__ == '__main__':

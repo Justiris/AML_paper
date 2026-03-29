@@ -82,45 +82,54 @@ def train_model(X_train, y_train, class_weights):
     return model, training_time
 
 
-def evaluate_model(model, X_test, y_test, feature_names):
-    """Evaluate model performance."""
+def compute_metrics(model, X, y, set_name=""):
+    """Compute metrics for a given dataset."""
+    y_pred = model.predict(X)
+    y_prob = model.predict_proba(X)[:, 1]
+    
+    precision, recall, f1, _ = precision_recall_fscore_support(y, y_pred, average='binary')
+    roc_auc = roc_auc_score(y, y_prob)
+    pr_auc = average_precision_score(y, y_prob)
+    cm = confusion_matrix(y, y_pred)
+    
+    if set_name:
+        print(f"\n{set_name} Metrics:")
+        print("-" * 50)
+        print(f"  Precision: {precision:.4f}")
+        print(f"  Recall:    {recall:.4f}")
+        print(f"  F1-Score:  {f1:.4f}")
+        print(f"  ROC-AUC:   {roc_auc:.4f}")
+        print(f"  PR-AUC:    {pr_auc:.4f}")
+    
+    return {
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'roc_auc': roc_auc,
+        'pr_auc': pr_auc,
+        'confusion_matrix': cm,
+        'y_prob': y_prob,
+        'y_pred': y_pred
+    }
+
+
+def evaluate_model(model, X_train, y_train, X_test, y_test, feature_names):
+    """Evaluate model performance on both train and test sets."""
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
     
-    # Predictions
-    print("\nGenerating predictions...")
-    start = time.time()
-    y_pred = model.predict(X_test)
-    y_prob = model.predict_proba(X_test)[:, 1]
-    inference_time = time.time() - start
-    print(f"Inference time: {inference_time:.2f}s")
+    # Training metrics
+    train_metrics = compute_metrics(model, X_train, y_train, "Training Set")
     
-    # Classification metrics
-    precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_pred, average='binary')
+    # Test metrics
+    test_metrics = compute_metrics(model, X_test, y_test, "Test Set")
     
-    print("\nClassification Metrics:")
-    print("-" * 50)
-    print(f"  Precision: {precision:.4f}")
-    print(f"  Recall:    {recall:.4f}")
-    print(f"  F1-Score:  {f1:.4f}")
-    
-    # AUC scores
-    roc_auc = roc_auc_score(y_test, y_prob)
-    pr_auc = average_precision_score(y_test, y_prob)
-    
-    print(f"\n  ROC-AUC: {roc_auc:.4f}")
-    print(f"  PR-AUC:  {pr_auc:.4f}")
-    
-    # Confusion matrix
-    cm = confusion_matrix(y_test, y_pred)
-    print(f"\nConfusion Matrix:")
+    # Test confusion matrix details
+    cm = test_metrics['confusion_matrix']
+    print(f"\nTest Confusion Matrix:")
     print(f"  TN: {cm[0,0]:>10,}  FP: {cm[0,1]:>10,}")
     print(f"  FN: {cm[1,0]:>10,}  TP: {cm[1,1]:>10,}")
-    
-    # Detailed classification report
-    print("\nDetailed Classification Report:")
-    print(classification_report(y_test, y_pred, target_names=['Normal', 'Fraud']))
     
     # Feature importance
     print("\nTop 10 Feature Importances:")
@@ -131,34 +140,21 @@ def evaluate_model(model, X_test, y_test, feature_names):
         print(f"  {i+1}. {feature_names[idx]}: {importances[idx]:.4f}")
     
     # Compute curves for saving
-    fpr, tpr, roc_thresholds = roc_curve(y_test, y_prob)
-    precision_curve, recall_curve, pr_thresholds = precision_recall_curve(y_test, y_prob)
-    
-    metrics = {
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'roc_auc': roc_auc,
-        'pr_auc': pr_auc,
-        'confusion_matrix': cm,
-        'feature_importances': importances,
-        'training_time': inference_time
-    }
+    fpr, tpr, roc_thresholds = roc_curve(y_test, test_metrics['y_prob'])
+    precision_curve, recall_curve, pr_thresholds = precision_recall_curve(y_test, test_metrics['y_prob'])
     
     curves = {
         'fpr': fpr,
         'tpr': tpr,
-        'roc_thresholds': roc_thresholds,
         'precision_curve': precision_curve,
-        'recall_curve': recall_curve,
-        'pr_thresholds': pr_thresholds
+        'recall_curve': recall_curve
     }
     
-    return metrics, curves, y_prob
+    return train_metrics, test_metrics, curves, importances
 
 
-def save_results(model, metrics, curves, y_prob, feature_names):
-    """Save model and results."""
+def save_results(model, train_metrics, test_metrics, curves, feature_importances, feature_names):
+    """Save model and results for both train and test."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
     
     # Save model
@@ -166,17 +162,26 @@ def save_results(model, metrics, curves, y_prob, feature_names):
     joblib.dump(model, model_path)
     print(f"\nModel saved to {model_path}")
     
-    # Save results
+    # Save results (both train and test)
     np.savez_compressed(
         os.path.join(RESULTS_DIR, 'rf_results.npz'),
-        y_prob=y_prob,
-        precision=metrics['precision'],
-        recall=metrics['recall'],
-        f1=metrics['f1'],
-        roc_auc=metrics['roc_auc'],
-        pr_auc=metrics['pr_auc'],
-        confusion_matrix=metrics['confusion_matrix'],
-        feature_importances=metrics['feature_importances'],
+        # Test metrics
+        y_prob=test_metrics['y_prob'],
+        precision=test_metrics['precision'],
+        recall=test_metrics['recall'],
+        f1=test_metrics['f1'],
+        roc_auc=test_metrics['roc_auc'],
+        pr_auc=test_metrics['pr_auc'],
+        confusion_matrix=test_metrics['confusion_matrix'],
+        # Training metrics
+        train_precision=train_metrics['precision'],
+        train_recall=train_metrics['recall'],
+        train_f1=train_metrics['f1'],
+        train_roc_auc=train_metrics['roc_auc'],
+        train_pr_auc=train_metrics['pr_auc'],
+        train_confusion_matrix=train_metrics['confusion_matrix'],
+        # Other
+        feature_importances=feature_importances,
         feature_names=feature_names,
         fpr=curves['fpr'],
         tpr=curves['tpr'],
@@ -199,17 +204,19 @@ def main():
     # Train model
     model, training_time = train_model(X_train, y_train, class_weights)
     
-    # Evaluate
-    metrics, curves, y_prob = evaluate_model(model, X_test, y_test, feature_names)
+    # Evaluate on both train and test
+    train_metrics, test_metrics, curves, feature_importances = evaluate_model(
+        model, X_train, y_train, X_test, y_test, feature_names
+    )
     
     # Save results
-    save_results(model, metrics, curves, y_prob, feature_names)
+    save_results(model, train_metrics, test_metrics, curves, feature_importances, feature_names)
     
     print("\n" + "=" * 60)
     print("RANDOM FOREST MODEL COMPLETE")
     print("=" * 60)
     
-    return metrics
+    return test_metrics
 
 
 if __name__ == '__main__':

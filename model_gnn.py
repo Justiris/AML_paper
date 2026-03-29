@@ -17,8 +17,20 @@ from sklearn.model_selection import train_test_split
 import warnings
 import time
 import os
+import random
 
 warnings.filterwarnings('ignore')
+
+
+def set_seed(seed=42):
+    """Set all random seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 # Check for PyTorch Geometric
 try:
@@ -330,38 +342,48 @@ def train_model(node_features, edge_index, edge_features, edge_labels):
     # Load best model
     model.load_state_dict(best_model_state)
     
-    return model, test_idx, node_features, edge_index, edge_features, edge_labels
+    return model, train_idx, val_idx, test_idx, node_features, edge_index, edge_features, edge_labels
 
 
-def evaluate_final(model, node_features, edge_index, edge_features, edge_labels, test_idx):
-    """Final evaluation on test set."""
+def evaluate_final(model, node_features, edge_index, edge_features, edge_labels, train_idx, test_idx):
+    """Final evaluation on both training and test sets."""
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
     
-    metrics = evaluate(model, node_features, edge_index, edge_features, edge_labels, test_idx)
+    # Training set metrics
+    print("\nTraining Set Metrics:")
+    print("-" * 50)
+    train_metrics = evaluate(model, node_features, edge_index, edge_features, edge_labels, train_idx)
+    print(f"  Precision: {train_metrics['precision']:.4f}")
+    print(f"  Recall:    {train_metrics['recall']:.4f}")
+    print(f"  F1-Score:  {train_metrics['f1']:.4f}")
+    print(f"  ROC-AUC:   {train_metrics['roc_auc']:.4f}")
+    print(f"  PR-AUC:    {train_metrics['pr_auc']:.4f}")
+    train_cm = confusion_matrix(train_metrics['y_true'], train_metrics['y_pred'])
+    train_metrics['confusion_matrix'] = train_cm
     
+    # Test set metrics
     print("\nTest Set Metrics:")
     print("-" * 50)
-    print(f"  Precision: {metrics['precision']:.4f}")
-    print(f"  Recall:    {metrics['recall']:.4f}")
-    print(f"  F1-Score:  {metrics['f1']:.4f}")
-    print(f"\n  ROC-AUC: {metrics['roc_auc']:.4f}")
-    print(f"  PR-AUC:  {metrics['pr_auc']:.4f}")
+    test_metrics = evaluate(model, node_features, edge_index, edge_features, edge_labels, test_idx)
+    print(f"  Precision: {test_metrics['precision']:.4f}")
+    print(f"  Recall:    {test_metrics['recall']:.4f}")
+    print(f"  F1-Score:  {test_metrics['f1']:.4f}")
+    print(f"  ROC-AUC:   {test_metrics['roc_auc']:.4f}")
+    print(f"  PR-AUC:    {test_metrics['pr_auc']:.4f}")
     
-    # Confusion matrix
-    cm = confusion_matrix(metrics['y_true'], metrics['y_pred'])
-    print(f"\nConfusion Matrix:")
-    print(f"  TN: {cm[0,0]:>10,}  FP: {cm[0,1]:>10,}")
-    print(f"  FN: {cm[1,0]:>10,}  TP: {cm[1,1]:>10,}")
+    test_cm = confusion_matrix(test_metrics['y_true'], test_metrics['y_pred'])
+    print(f"\nTest Confusion Matrix:")
+    print(f"  TN: {test_cm[0,0]:>10,}  FP: {test_cm[0,1]:>10,}")
+    print(f"  FN: {test_cm[1,0]:>10,}  TP: {test_cm[1,1]:>10,}")
+    test_metrics['confusion_matrix'] = test_cm
     
-    metrics['confusion_matrix'] = cm
-    
-    return metrics
+    return train_metrics, test_metrics
 
 
-def save_results(model, metrics):
-    """Save model and results."""
+def save_results(model, train_metrics, test_metrics):
+    """Save model and results for both train and test."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
     
     # Save model
@@ -369,18 +391,26 @@ def save_results(model, metrics):
     torch.save(model.state_dict(), model_path)
     print(f"\nModel saved to {model_path}")
     
-    # Save results
+    # Save results (both train and test)
     np.savez_compressed(
         os.path.join(RESULTS_DIR, 'gnn_results.npz'),
-        y_prob=metrics['y_prob'],
-        y_pred=metrics['y_pred'],
-        y_true=metrics['y_true'],
-        precision=metrics['precision'],
-        recall=metrics['recall'],
-        f1=metrics['f1'],
-        roc_auc=metrics['roc_auc'],
-        pr_auc=metrics['pr_auc'],
-        confusion_matrix=metrics['confusion_matrix']
+        # Test metrics
+        y_prob=test_metrics['y_prob'],
+        y_pred=test_metrics['y_pred'],
+        y_true=test_metrics['y_true'],
+        precision=test_metrics['precision'],
+        recall=test_metrics['recall'],
+        f1=test_metrics['f1'],
+        roc_auc=test_metrics['roc_auc'],
+        pr_auc=test_metrics['pr_auc'],
+        confusion_matrix=test_metrics['confusion_matrix'],
+        # Training metrics
+        train_precision=train_metrics['precision'],
+        train_recall=train_metrics['recall'],
+        train_f1=train_metrics['f1'],
+        train_roc_auc=train_metrics['roc_auc'],
+        train_pr_auc=train_metrics['pr_auc'],
+        train_confusion_matrix=train_metrics['confusion_matrix']
     )
     
     print(f"Results saved to {RESULTS_DIR}/gnn_results.npz")
@@ -388,6 +418,8 @@ def save_results(model, metrics):
 
 def main():
     """Main execution."""
+    set_seed(RANDOM_STATE)  # Ensure reproducibility
+    
     print("=" * 60)
     print("GNN FOR AML DETECTION")
     print("=" * 60)
@@ -398,21 +430,23 @@ def main():
     node_features, edge_index, edge_features, edge_labels = load_data()
     
     # Train model
-    model, test_idx, node_features, edge_index, edge_features, edge_labels = train_model(
+    model, train_idx, val_idx, test_idx, node_features, edge_index, edge_features, edge_labels = train_model(
         node_features, edge_index, edge_features, edge_labels
     )
     
-    # Evaluate
-    metrics = evaluate_final(model, node_features, edge_index, edge_features, edge_labels, test_idx)
+    # Evaluate on both train and test
+    train_metrics, test_metrics = evaluate_final(
+        model, node_features, edge_index, edge_features, edge_labels, train_idx, test_idx
+    )
     
     # Save results
-    save_results(model, metrics)
+    save_results(model, train_metrics, test_metrics)
     
     print("\n" + "=" * 60)
     print("GNN MODEL COMPLETE")
     print("=" * 60)
     
-    return metrics
+    return test_metrics
 
 
 if __name__ == '__main__':

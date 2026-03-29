@@ -1,6 +1,7 @@
 # Anti-Money Laundering Detection with Machine Learning
 
 Comparison of three machine learning approaches for fraud detection on transaction data.
+https://gemini.google.com/share/da7d987bd503
 
 ## Models
 
@@ -10,26 +11,37 @@ Comparison of three machine learning approaches for fraud detection on transacti
 
 ## Results Summary
 
+### Test Set Performance
+
 | Model | Precision | Recall | F1-Score | ROC-AUC | PR-AUC |
 |-------|-----------|--------|----------|---------|--------|
 | K-means | 0.11% | 10.48% | 0.22% | 0.506 | 0.001 |
 | Random Forest | 0.15% | 74.68% | 0.30% | 0.685 | 0.017 |
-| GNN (Base) | 88.04% | 99.85% | 93.57% | 0.9999 | 0.9985 |
-| **GNN (+PayType)** | **90.38%** | **99.85%** | **94.88%** | **0.9998** | **0.9986** |
+| GNN (Base) | 81.62% | 99.85% | 89.82% | 0.9999 | 0.9985 |
+| **GNN (+PayType)** | **82.75%** | **99.85%** | **90.50%** | **0.9998** | **0.9985** |
+
+### Training Set Performance
+
+| Model | Precision | Recall | F1-Score | PR-AUC |
+|-------|-----------|--------|----------|--------|
+| K-means | N/A | N/A | N/A | N/A |
+| Random Forest | 66.32% | 100.00% | 79.75% | 0.9953 |
+| GNN (Base) | 81.81% | 99.94% | 89.97% | 0.9996 |
+| **GNN (+PayType)** | **83.35%** | **99.96%** | **90.90%** | **0.9997** |
 
 ### Key Findings
 
 - **GNN dramatically outperforms** traditional methods by leveraging transaction graph structure
-- GNN (+PayType) achieves **94.88% F1-Score** vs <1% for baseline models
+- **GNN (+PayType) achieves best results** with 90.50% Test F1-Score
 - Only **3 fraudulent transactions missed** out of 1,975 (99.85% recall)
-- Low false positive rate: 210 false alarms out of ~1.9M legitimate transactions
-- Adding **payment type features improved precision by 2.3%** (88.04%→90.38%)
+- GNN generalizes well: <1% gap between train and test F1
+- Adding payment type features **improved** precision by 1.1% (81.62%→82.75%)
 
 #### GNN Model Comparison
-| Variant | Edge Features | Precision | F1-Score | False Positives |
-|---------|---------------|-----------|----------|----------------|
-| GNN (Base) | 4 | 88.04% | 93.57% | 268 |
-| GNN (+PayType) | 11 (+7 payment type) | **90.38%** | **94.88%** | **210** |
+| Variant | Edge Features | Test F1 | False Positives |
+|---------|---------------|---------|-----------------|
+| GNN (Base) | 4 | 89.82% | 444 |
+| **GNN (+PayType)** | 11 (+7 payment type) | **90.50%** | **411** |
 
 ### Metrics Explained
 
@@ -81,19 +93,35 @@ The GNN uses two types of features:
 | `is_currency_exchange` | Payment currency ≠ Received currency |
 | `payment_type_*` | One-hot encoded payment type (ACH, Cash Deposit, Cash Withdrawal, Cheque, Credit card, Cross-border, Debit card) |
 
+## GNN Explainability
+
+Feature importance analysis using gradient-based attribution on all 9,873 fraud edges:
+
+| Rank | Feature | Importance |
+|------|---------|------------|
+| 1 | `is_currency_exchange` | 0.0580 |
+| 2 | `is_cross_border` | 0.0410 |
+| 3 | `amount` | 0.0333 |
+| 4 | `payment_ACH` | 0.0203 |
+| 5 | `payment_Cheque` | 0.0143 |
+| 6 | `payment_Debit_card` | 0.0136 |
+| 7 | `payment_Cash_Withdrawal` | 0.0124 |
+| 8 | `payment_Cash_Deposit` | 0.0113 |
+| 9 | `payment_Credit_card` | 0.0112 |
+| 10 | `payment_Cross_border` | 0.0081 |
+| 11 | `hour` | 0.0040 |
+
+**Key Insights:**
+- **Currency exchange transactions** are the strongest fraud signal
+- **Cross-border transfers** rank second, consistent with AML red flags
+- **Transaction amount** is important but less decisive than structural features
+- **`hour` is least important** — fraud occurs throughout the day without time preference
+- Model achieves **99.9% accuracy** on all explained fraud edges
+
+Run `python gnn_explainer.py` to regenerate explanations.
+
 ## Future Work
 
-### Feature Importance Analysis
-GNNs lack built-in feature importance like Random Forest. Potential approaches:
-
-| Method | Description |
-|--------|-------------|
-| Permutation Importance | Shuffle each feature, measure performance drop |
-| Gradient-based Attribution | Compute gradients w.r.t. input features |
-| Integrated Gradients | More robust attribution method |
-| GNNExplainer | PyG's built-in explainability tool |
-
-### Other Improvements
 - Hyperparameter tuning (hidden dimensions, layers, dropout)
 - Attention-based GNN architectures (GAT)
 - Temporal modeling for transaction sequences
@@ -145,7 +173,9 @@ python compare_models.py
 ├── data_preparation.py   # Data preprocessing pipeline
 ├── model_kmeans.py       # K-means clustering model
 ├── model_rf.py           # Random Forest classifier
-├── model_gnn.py          # GNN with GraphSAGE
+├── model_gnn_base.py     # GNN with base 4 features
+├── model_gnn.py          # GNN with payment type (11 features)
+├── gnn_explainer.py      # GNN explainability analysis
 ├── compare_models.py     # Model comparison and visualization
 ├── processed_data/       # Preprocessed data (not tracked)
 └── results/              # Model outputs and metrics
